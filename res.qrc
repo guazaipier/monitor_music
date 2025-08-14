@@ -1,0 +1,32 @@
+<RCC>
+    <qresource prefix="/">
+        <file>images/back.svg</file>
+        <file>images/green.jpg</file>
+        <file>images/loop.svg</file>
+        <file>images/loop-single.svg</file>
+        <file>images/loved.svg</file>
+        <file>images/max.svg</file>
+        <file>images/min.svg</file>
+        <file>images/next.svg</file>
+        <file>images/normal.svg</file>
+        <file>images/play.svg</file>
+        <file>images/random.svg</file>
+        <file>images/search.svg</file>
+        <file>images/sequent.svg</file>
+        <file>images/set.svg</file>
+        <file>images/skin.svg</file>
+        <file>images/stop.svg</file>
+        <file>images/to-love.svg</file>
+        <file>images/voice-mute.svg</file>
+        <file>images/voice-top.svg</file>
+        <file>images/close.svg</file>
+        <file>images/collect.svg</file>
+        <file>images/dislike.svg</file>
+        <file>images/download.svg</file>
+        <file>images/email.svg</file>
+        <file>images/mini.svg</file>
+        <file>images/pink-cat.jpg</file>
+        <file>images/comment.svg</file>
+        <file>images/logo.png</file>
+    </qresource>
+</RCC>
