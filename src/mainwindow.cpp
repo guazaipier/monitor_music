@@ -30,7 +30,7 @@
 #include <QStandardPaths>
 #include <QSystemTrayIcon>
 
-
+#include <QThread>
 // 背景图片
 QString BG_DEFAULT = ":/images/green.jpg";
 QString BG_PINK = ":/images/pink-cat.jpg";
@@ -206,8 +206,9 @@ void MainWindow::loadMediaPlayer()
 
 
     // 播放当前播放列表
+    m_currentPlayingIndex = -1;
     if (m_playlistTable->rowCount() > 0) {
-        m_currentPlayingIndex = 0;
+        ++m_currentPlayingIndex;
         syncPlay(m_playlistTable->item(0, URL)->text());
     }
 }
@@ -627,29 +628,23 @@ void MainWindow::on_tableItemDoubleClicked(QTableWidgetItem* item)
     }
     if (!in_playlist)
     {
-        // 当前播放列表更改
-        // qDebug() << "before insert playlist>>> index=" << m_currentPlayingIndex << " title=" << getCurrentSong()->title;
-        if (m_currentPlayingIndex != 0 || m_playlistTable->rowCount() != 0)
-            ++m_currentPlayingIndex;
         // 加入到播放列表中
-        m_playlistTable->insert(m_currentPlayingIndex, info);
+        m_playlistTable->insert(++m_currentPlayingIndex, info);
         downloadItemIcon(m_playlistTable->item(m_currentPlayingIndex, ICON), info->pic);
-        // qDebug() << "after insert playlist>>> index=" << m_currentPlayingIndex << " title=" << getCurrentSong()->title;
         // 加入当前播放列表数据库中
         m_sql->insertIntoPlaylist(info);
+        qDebug() << __func__ << " insert playlist>>> index=" << m_currentPlayingIndex << " title=" << getCurrentSong()->title;
     }
 
     // 播放
-    // qDebug() << "start call syncplay index=" << m_currentPlayingIndex << " title=" << info->title;
     if (m_player->isPlaying()) {
         m_player->pause(); // stop 的话会触发信号状态改变，导致 m_currentPlayingIndex 改变了
     }
     syncPlay(info->url);
-    // qDebug() << "end call syncplay index=" << m_currentPlayingIndex << " title=" << info->title;
 
     // 存入历史播放列表
     m_sql->updatePlayHistory(info);
-    qDebug() << "change current playindex end." << m_playlistTable->rowCount() << " index=" << m_currentPlayingIndex;
+    qDebug() << __func__ << " changed current song index=" << m_currentPlayingIndex << " title=" << info->title;
 }
 
 void MainWindow::decodeFromJson(QWidget* search_widget, QByteArray response)
