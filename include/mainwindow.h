@@ -45,12 +45,14 @@ public:
     void insert(int index, QSharedPointer<SongInfo>);
     // 删除匹配 URL 的行
     void removeRow(QString url);
+    // 查找 row
+    int findRow(QString url);
 };
 
+class LyricWidget;
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
-
 public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
@@ -78,6 +80,7 @@ protected:
     void closeEvent(QCloseEvent*) override;
     // 将背景图片四周裁剪为圆角
     void paintEvent(QPaintEvent *event) override;
+
     // 拖动窗口
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
@@ -93,13 +96,14 @@ private slots:
     void decodeFromJson(QWidget* search_widget, QByteArray response);
     // 下载 item 歌曲对应的图标
     void downloadItemIcon(QTableWidgetItem *item, const QString iconUrl);
+    // 播放音乐，默认由 loopStatus 按钮控制播放顺序
+    void playMedia(int playIndex = -1);
     // 同步播放显示
     void syncPlay(QString source);
     // 播放结束
     void on_playingStopped(bool playing);
     // 播放出错
     void on_playingError(QMediaPlayer::Error error, const QString &errorString);
-
     // 界面上的 MUSIC 按钮响应 ==> 回到主界面
     void on_m_btnMain_clicked();
     // 界面上的返回按钮 ==> 回到上一个界面
@@ -126,13 +130,18 @@ private slots:
     void on_m_btnGoNext_clicked();
     // TODO: 循环播放
     void on_m_btnMediaLoop_clicked();
-    // TODO: 显示歌词
+    // 点击右下方词->显示歌词
     void on_m_btnMediaLyric_clicked();
     // TODO: 设置音量
     void on_m_btnMediaSound_clicked();
     // 播放进度条滑动
     void on_m_sliderMediaTicker_sliderMoved(int position);
-
+    // 点击左下方删除->从当前播放列表中移除正在播放的音乐
+    void on_m_btnMediaDelete_clicked();
+    // 点击左下方歌名->显示歌词
+    void on_m_btnMediaName_clicked();
+    // 点击左下方歌手->搜索歌手
+    void on_m_btnMediaPlayer_clicked();
 
 private:
     // 皮肤设置
@@ -189,11 +198,20 @@ private:
     QString m_playUrl;
     // 记录播放列表及时更新
     int m_currentPlayingIndex;
+    QList<QString> m_playingHistory;
+    // 记录当前播放循环状态
+    int m_loopStatus;
 
     // 网络
     OnlineRequest* m_access;
     // 数据库
     LocalSql* m_sql;
 
+    // 歌词窗口
+    LyricWidget* m_lyricWidget;
+
+    // 音量
+    QSlider* m_volumeSlider;
+    QTimer* m_volumeTimer;
 };
 #endif // MAINWINDOW_H

@@ -12,7 +12,7 @@ aux_source_directory(src SRC_LIST)
 
 qt_add_executable(monitor_music
     WIN32 MACOSX_BUNDLE
-    include/localsql.h include/mainwindow.h include/onlinerequest.h include/utils.h
+    include/lyricwidget.h include/localsql.h include/mainwindow.h include/onlinerequest.h include/utils.h
     ${SRC_LIST}
     res.qrc
 

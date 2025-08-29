@@ -1,4 +1,5 @@
 #include "../include/mainwindow.h"
+#include "../include/lyricwidget.h"
 #include "ui_mainwindow.h"
 #include "../include/utils.h"
 #include "../include/localsql.h"
@@ -29,8 +30,8 @@
 #include <QFileDialog>
 #include <QStandardPaths>
 #include <QSystemTrayIcon>
+#include <QRandomGenerator>
 
-#include <QThread>
 // 背景图片
 QString BG_DEFAULT = ":/images/green.jpg";
 QString BG_PINK = ":/images/pink-cat.jpg";
@@ -46,6 +47,14 @@ QString ICON_TOLOVE  = ":/images/to-love.svg";
 
 // 标识
 enum IDENTIFY_COLUMN {ICON = 0, TITLE, AUTHOR, URL, PIC, LRC};
+// 初始值
+static int INI_VOLUME = 50;
+enum PLAY_LOOP_STAT {
+    PLAY_LOOP,          // 播放列表一直顺序播放
+    PLAY_RANDOM,        // 播放列表内随机播放
+    PLAY_SINGLE,        // 循环播放当前音乐
+    PLAY_SEQUENT_ONCE   // 播放列表顺序播放一次
+};
 
 QSharedPointer<SongInfo> TableWidget::getItemInfo(QTableWidgetItem* item)
 {
@@ -134,12 +143,23 @@ void TableWidget::removeRow(QString url)
     }
 }
 
+int TableWidget::findRow(QString url)
+{
+    for (int i = 0; i < rowCount(); ++i)
+    {
+        if (item(i, URL) && item(i, URL)->text() == url)
+            return i;
+    }
+    return -1;  // 查找失败返回 -1
+}
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
     , m_access(new OnlineRequest(this))
     , m_player(new QMediaPlayer(this))
     , m_audio(new QAudioOutput(m_player))
+    , m_volumeTimer(new QTimer(this))
 {
     // 加载数据库
     loadMysqlIni();
@@ -194,12 +214,18 @@ void MainWindow::loadMysqlIni()
 
 void MainWindow::loadMediaPlayer()
 {
+    m_lyricWidget = new LyricWidget(this);
+    ui->m_lyricLayout->addWidget(m_lyricWidget);
+    // update();
+    m_loopStatus = PLAY_LOOP;
+    m_audio->setVolume(INI_VOLUME);
     m_player->setAudioOutput(m_audio);
     connect(m_player, &QMediaPlayer::positionChanged, this, [this](qint64 value) {
         ui->m_sliderMediaTicker->setRange(0, m_player->duration());
         ui->m_sliderMediaTicker->setValue(value);
         ui->m_labMediaTicker->setText(format(value));
         ui->m_labMediaDuration->setText(format(m_player->duration()));
+        m_lyricWidget->setCurrentPosition(value);
     });
     connect(m_player, &QMediaPlayer::playingChanged, this, &MainWindow::on_playingStopped);
     connect(m_player, &QMediaPlayer::errorOccurred, this, &MainWindow::on_playingError);
@@ -208,8 +234,9 @@ void MainWindow::loadMediaPlayer()
     // 播放当前播放列表
     m_currentPlayingIndex = -1;
     if (m_playlistTable->rowCount() > 0) {
-        ++m_currentPlayingIndex;
-        syncPlay(m_playlistTable->item(0, URL)->text());
+        playMedia();
+    } else {
+        ui->m_btnMediaDelete->setEnabled(false);
     }
 }
 
@@ -223,47 +250,117 @@ void MainWindow::setStyleSheet()
     ui->m_mainWidget->setContentsMargins(0, 0, 0, 0);
     this->setContentsMargins(0,0,0,0);
 
-    ui->m_listWidget->setStyleSheet(
-        "QListWidget {"
-        "   border: none;"
-        "   background: #f5f5f5;"
-        "   border-top-left-radius: 10px;"
-        "   border-bottom-left-radius: 10px;"
-        "}"
-        "QListWidget::item {"
-        "   height: 40px;"
-        "   border-bottom: 1px solid #ddd;"
-        "   padding-left: 10px;"
-        "}"
-        "QListWidget::item:hover {"
-        "   background-color: #e0e0e0;"
-        "}"
-        "QListWidget::item:selected {"
-        "   background: white;"
-        "   color: black;"
-        "   border-left: 3px solid #1E90FF;"
-        "}"
-        );
-
-    ui->m_stackWidget->setStyleSheet(
-        "QStackedWidget {"
-        "   border-top-right-radius: 15px;"
-        "   border-bottom-right-radius: 15px;"
-        "   background: white;"
-        "}"
-        );
-
     // 设置控件圆角
-    QMainWindow::setStyleSheet("QWidget {"
-                                    "border-radius: 10px;"  // 圆角半径
-                               "}");
+    QMainWindow::setStyleSheet("QStackedWidget, QWidget, QLabel {"
+                               "   border: none;"
+                               "   outline: none;"
+                               "   background-color: transparent;"
+                               "}"
+                               "QListWidget,QTableWidget {"
+                               "   border: none;"
+                               "   outline: none;"
+                               "   background: transparent;"
+                               // "   show-decoration-selected: 0;"  // 移除选中装饰
+                               "}"
+                               "QListWidget::item, QTableWidget::item {"
+                               "   height: 50px;"
+                               "   border-radius: 10px;"
+                               "   background: transparent;"
+                               "}"
+                               "QListWidget::item:hover, QTableWidget::item:hover {"
+                               "   border-radius: 10px;"
+                               "   background-color: rgba(100, 100, 100, 50);"
+                               "}"
+                               "QTableWidget::item:pressed {"
+                               "   border-radius: 10px;"
+                               "   background-color: rgba(100, 100, 100, 60);"
+                               "}"
+                               "QTableWidget::item:selected {"
+                               "   border-radius: 10px;"
+                               "   background-color: rgba(100, 100, 100, 70); "
+                               "}"
+                               "QListWidget::item:selected {"
+                               "   border-radius: 10px;"
+                               "   background-color: rgba(100, 100, 100, 70); "
+                               "}"
+                               "QLineEdit {"
+                               "   border-radius: 10px;"
+                               "   background-color: rgba(100, 100, 100, 70);"
+                               "}"
+                               R"(
+                                QSlider::groove:vertical {
+                                    border-radius: 10px;
+                                }
 
+                                QSlider::add-page:vertical {
+                                    border-radius: 10px;
+                                  }
+
+                                QSlider::handle:vertical {
+                                    border-radius: 10px;
+                                }
+                                )"
+                               );
+    ui->m_sliderMediaTicker->setStyleSheet(R"(
+        QSlider::groove:horizontal {
+            background: #555555;
+            height: 8px;
+            border-radius: 4px;
+        }
+
+        QSlider::sub-page:horizontal {
+            background: #1E90FF;
+            border-radius: 4px;
+        }
+
+        QSlider::handle:horizontal {
+            background: white;
+            border: 1px solid #AAAAAA;
+            height: 12px;
+            width: 12px;
+            margin: -4px 0;
+            border-radius: 6px;
+        }
+    )");
+    m_volumeSlider = new QSlider(Qt::Vertical, this);
+    m_volumeSlider->setFixedHeight(120);
+    m_volumeSlider->setFixedWidth(20);
+    m_volumeSlider->setRange(0, 100);
+    m_volumeSlider->setValue(50);
+    m_volumeSlider->setTickInterval(10);
+    //groove（轨道）、handle（滑块手柄）、add-page（滑块右侧或上侧部分）和sub-page（滑块左侧或下侧部分）
+    m_volumeSlider->setStyleSheet(R"(
+        QSlider::groove:vertical {
+            background: #555555;
+            width: 4px;
+            border-radius: 2px;
+        }
+
+        QSlider::add-page:vertical {
+            background: #1E90FF;
+            border-radius: 2px;
+          }
+
+        QSlider::handle:vertical {
+            background: white;
+            border: 1px solid #AAAAAA;
+            height: 12px;
+            width: 12px;
+            margin: 0 -4px;
+            border-radius: 6px;
+        }
+    )");
+    m_volumeSlider->hide();
 
     // 设置透明度
-    setOpacity(ui->m_listWidget, 0.7);
-    setOpacity(ui->m_stackWidget, 0.7);
-    setOpacity(ui->m_lineEditSearch, 0.7);
+    // setOpacity(ui->m_listWidget, 0.7);
+    // setOpacity(ui->m_stackWidget, 0.7);
+    // setOpacity(ui->m_lineEditSearch, 0.7);
+    // setOpacity(ui->m_contentStackWidget,0.7);
 
+
+    // 设置当前页面
+    ui->m_contentStackWidget->setCurrentWidget(ui->m_mainPage);
 }
 
 void MainWindow::setOpacity(QWidget* widget, qreal opacity)
@@ -281,15 +378,18 @@ void MainWindow::setEventHandler()
     connect(ui->m_btnMax, &QPushButton::clicked, this, &MainWindow::showMaxOrNormal);
     connect(ui->m_btnClose, &QPushButton::clicked, this, &QMainWindow::close);
 
-    m_dragValidRect = QRect(this->rect().x(),
-                            this->rect().y(),
-                            this->rect().width(),
-                            this->rect().height() -
-                                ui->m_hLayoutContent->contentsRect().height() -
-                                ui->m_hLayoutBottom->contentsRect().height());
+    // 音量控件
+    m_volumeTimer->setSingleShot(true);
+    m_volumeTimer->setInterval(3000);
+    connect(m_volumeTimer, &QTimer::timeout, this, [this]{
+        this->m_volumeSlider->hide();
+    });
+    connect(m_volumeSlider, &QSlider::valueChanged, this, [this](int position) {
+        this->m_audio->setVolume(position/100.0);
+        qDebug() << QString("volume_slider changed to: %1%%").arg(position);
+    });
 
-    setMouseTracking(true); // 启用鼠标跟踪
-    installEventFilter(this); // 安装事件过滤器
+    ui->m_btnMediaSound->installEventFilter(this);
 
     // 更换皮肤菜单项
     QAction* actionbackToDefault = new QAction(QIcon(), "default", this);
@@ -375,7 +475,6 @@ void MainWindow::initStackWindow()
         }
     }
     qDebug() << "Load data from database successfully.";
-
     ui->m_mainWidget->setUpdatesEnabled(true);
 }
 
@@ -388,7 +487,38 @@ void MainWindow::formatWidget(QWidget* widget, QString title, TableWidget* table
         label->setFont(QFont("Microsoft YaHei UI", 16, QFont::Bold));
         gridLayout->addWidget(label);
     }
-
+    table->horizontalHeader()->setStyleSheet(
+                                 "QHeaderView::section {"
+                                 "   font-weight: bold;"
+                                 "   border: none;"
+                                 "   background: transparent;"
+                                 "}");
+    table->verticalHeader()->setVisible(false);
+    // 设置 tableWidget 的垂直滚动条样式
+    table->verticalScrollBar()->setStyleSheet(R"(
+        QScrollBar:vertical {
+            background: rgba(240, 240, 240, 100);   /* 滚动条背景色 */
+            width: 15px;           /* 垂直滚动条的宽度 */
+            margin: 0px 0px 0px 0px;
+            border-radius: 8px;
+        }
+        QScrollBar::handle:vertical {
+            background: rgba(80, 80, 60, 80);   /* 滑块颜色 */
+            min-height: 20px;       /* 滑块最小高度 */
+            border-radius: 5px;     /* 滑块圆角 */
+        }
+        QScrollBar::handle:vertical:hover {
+            background: rgba(40, 40, 40, 100);   /* 鼠标悬停时滑块颜色 */
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            background: none;       /* 移除上下箭头的背景 */
+            height: 0px;           /* 隐藏上下箭头 */
+            border-radius: 8px;
+        }
+        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+            background: none;       /* 滑块前后背景透明 */
+        }
+    )");
     gridLayout->addWidget(table);
     widget->setLayout(gridLayout);
 
@@ -453,26 +583,18 @@ void MainWindow::paintEvent(QPaintEvent *event)
     painter.setPen(QPen(QColor(255, 255, 255, 150), 2));
     painter.drawPath(path);
 
-    // 更新当前自定义工具栏窗口位置，方便后面拖动窗口
-    m_dragValidRect = QRect(this->rect().x(),
-                            this->rect().y(),
-                            this->rect().width(),
-                            this->rect().height() -
-                                ui->m_hLayoutContent->contentsRect().height() -
-                                ui->m_hLayoutBottom->contentsRect().height());
-
+    m_volumeSlider->move(ui->m_btnMediaSound->pos().x() + (ui->m_btnMediaSound->width() - m_volumeSlider->width()) / 2,
+                         ui->m_btnMediaSound->pos().y() - m_volumeSlider->height());
     QMainWindow::paintEvent(event);
 }
 
 void MainWindow::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::LeftButton) {
-        // if (ui->m_hLayoutTop->contentsRect().contains(m_pressedPos)) {
-        if (m_dragValidRect.contains(event->pos())) {
+        if (ui->m_hLayoutTop->contentsRect().contains(event->pos())) {
             // 在工具栏中点击 --> 拖动窗口
             m_pressedPos = event->pos();
             m_isDrag = true;
-            // qDebug() << "drag window begin: " << m_isDrag << " " << m_pressedPos;
         } else {
             // 边缘按下 --> 窗口大小变动
             m_resizeEdge = getResizeEdge(event->pos());
@@ -539,6 +661,18 @@ void MainWindow::mouseReleaseEvent(QMouseEvent *event)
     }
 }
 
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == ui->m_btnMediaSound && event->type() == QEvent::HoverEnter) {
+        qDebug() << "mouse hovered over volume button";
+        m_volumeSlider->show();
+        m_volumeTimer->stop();
+        m_volumeTimer->start();
+        return true;
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
+
 MainWindow::Edge MainWindow::getResizeEdge(const QPoint &pos)
 {
     QRect rect = this->rect();
@@ -554,16 +688,6 @@ MainWindow::Edge MainWindow::getResizeEdge(const QPoint &pos)
     if (atRight) return Right;
 
     return None;
-}
-
-bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
-    // 确保鼠标离开控件时恢复默认光标
-    if (event->type() == QEvent::Leave) {
-        if (!m_isResizing) {
-            setCursor(Qt::ArrowCursor);
-        }
-    }
-    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::showMaxOrNormal()
@@ -613,7 +737,6 @@ void MainWindow::on_tableItemDoubleClicked(QTableWidgetItem* item)
 
     QSharedPointer<SongInfo> info = TableWidget::getItemInfo(item);
     if (!info) return;
-
     bool in_playlist = false;
     for (int i = 0; i < m_playlistTable->rowCount(); ++i)
     {
@@ -630,6 +753,7 @@ void MainWindow::on_tableItemDoubleClicked(QTableWidgetItem* item)
     {
         // 加入到播放列表中
         m_playlistTable->insert(++m_currentPlayingIndex, info);
+        ui->m_btnMediaDelete->setEnabled(true);
         downloadItemIcon(m_playlistTable->item(m_currentPlayingIndex, ICON), info->pic);
         // 加入当前播放列表数据库中
         m_sql->insertIntoPlaylist(info);
@@ -637,14 +761,7 @@ void MainWindow::on_tableItemDoubleClicked(QTableWidgetItem* item)
     }
 
     // 播放
-    if (m_player->isPlaying()) {
-        m_player->pause(); // stop 的话会触发信号状态改变，导致 m_currentPlayingIndex 改变了
-    }
-    syncPlay(info->url);
-
-    // 存入历史播放列表
-    m_sql->updatePlayHistory(info);
-    qDebug() << __func__ << " changed current song index=" << m_currentPlayingIndex << " title=" << info->title;
+    playMedia(m_currentPlayingIndex);
 }
 
 void MainWindow::decodeFromJson(QWidget* search_widget, QByteArray response)
@@ -719,9 +836,69 @@ void MainWindow::downloadItemIcon(QTableWidgetItem* item, const QString iconUrl)
     connect(m_access, &OnlineRequest::itemIconDownloadFinished, this, &MainWindow::setIcon);
 }
 
+void MainWindow::playMedia(int playIndex)
+{
+    if (m_playlistTable->rowCount() <= 0)
+        return;
+    // 默认情况下（playIndex == -1），m_btnMediaLoop 按钮控制播放顺序，生成 m_currentPlayingIndex
+    if (playIndex == -1) {
+
+        switch (m_loopStatus) {
+        case PLAY_LOOP:
+            m_currentPlayingIndex = (++m_currentPlayingIndex) % m_playlistTable->rowCount();
+            break;
+        case PLAY_RANDOM:
+            m_currentPlayingIndex = QRandomGenerator::global()->bounded(0, m_playlistTable->rowCount());
+            break;
+        case PLAY_SINGLE:
+            break;
+        case PLAY_SEQUENT_ONCE:
+            if (++m_currentPlayingIndex; m_currentPlayingIndex >= m_playlistTable->rowCount())
+                return;
+        }
+    }
+
+    // 播放
+    if (m_player->isPlaying()) {
+        m_player->pause();
+    }
+
+    QString url = m_playlistTable->item(m_currentPlayingIndex, URL)->text();
+    // 上一首相同的话，就不 append 了
+    if (m_playingHistory.empty() || m_playingHistory.back() != url) {
+        qDebug() << "append=" << url;
+        m_playingHistory.append(url);
+    }
+
+    syncPlay(url);
+    // 存入播放历史列表
+    QSharedPointer<SongInfo> info = getCurrentSong();
+    m_sql->updatePlayHistory(info);
+}
+
 void MainWindow::syncPlay(QString source)
 {
     qDebug() << "syncPlay start index=" << m_currentPlayingIndex << " source=" << source << " start...";
+    if (source.isEmpty()) {
+        m_player->setSource(source);
+        m_player->stop();
+        // 更新 UI 组件
+        ui->m_btnMediaLove->setIcon(QIcon(ICON_TOLOVE));
+        ui->m_btnGoPlay->setIcon(QPixmap(ICON_TOPLAY));
+        ui->m_btnGoPlay->setEnabled(false);
+        ui->m_btnMediaName->setText(tr("无媒体"));
+        ui->m_btnMediaPlayer->setText(tr("无歌手"));
+        ui->m_labMediaDuration->setText("");
+        ui->m_labMediaTicker->setText("");
+        ui->m_sliderMediaTicker->setValue(0);
+        ui->m_sliderMediaTicker->setRange(0, 0);
+        m_lyricWidget->setLyric("");
+        this->ui->m_btnMediaFace->setIconSize(QSize(80,80));
+        this->ui->m_btnMediaFace->setIcon(QIcon(":/images/logo.png"));
+        QPixmap label(":/images/logo.png");
+        this->ui->m_songLabel->setPixmap(label.scaled(ui->m_songLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        return;
+    }
     m_player->setSource(QUrl(source));
     m_player->play();
 
@@ -742,35 +919,27 @@ void MainWindow::syncPlay(QString source)
         else
             icon = QIcon(pixmap.scaled(iconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
 
-        QMetaObject::invokeMethod(this, [this, icon]() {
+        QMetaObject::invokeMethod(this, [this, icon, pixmap]() {
             this->ui->m_btnMediaFace->setIcon(icon);
             this->ui->m_btnMediaFace->setIconSize(QSize(80,80));
+            this->ui->m_songLabel->setPixmap(pixmap.scaled(ui->m_songLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
         }, Qt::QueuedConnection);
     });
 
-    // 不同步，m_playlistTable 和 m_currentPlayIndex
-    // TODO: 插入到当前播放列表也不同步
-
+    // 更新 UI
     ui->m_btnGoPlay->setIcon(QPixmap(ICON_TOPAUSE));
+    ui->m_btnGoPlay->setEnabled(true);
     ui->m_btnMediaName->setText(info->title);
     ui->m_btnMediaPlayer->setText(info->author);
     m_playlistTable->setCurrentItem(m_playlistTable->item(m_currentPlayingIndex, TITLE));
-
+    m_lyricWidget->setLyric(info->lrc);
     qDebug() << "syncPlay start index=" << m_currentPlayingIndex << " source=" << source << " end.";
 }
 
 void MainWindow::on_playingStopped(bool playing)
 {
     if (playing == false && m_player->playbackState() == QMediaPlayer::StoppedState) {
-        if (m_playlistTable->rowCount() == 0) return;
-        ++m_currentPlayingIndex;
-        if (m_currentPlayingIndex >= m_playlistTable->rowCount()) {
-            m_currentPlayingIndex = 0;
-        }
-        syncPlay(m_playlistTable->item(m_currentPlayingIndex, URL)->text());
-
-        QSharedPointer<SongInfo> info = getCurrentSong();
-        m_sql->updatePlayHistory(info);
+        playMedia();
     }
 }
 
@@ -783,7 +952,13 @@ void MainWindow::on_playingError(QMediaPlayer::Error error, const QString &error
     qDebug() << "on_playingError remove for source=" << source << " start...";
 
     m_playlistTable->removeRow(source);
+    m_playingHistory.removeAll(source);
+    qDebug() << "remove=" << source;
 
+    if (m_playlistTable->rowCount() <= 0) {
+        m_currentPlayingIndex = -1;
+        ui->m_btnMediaDelete->setEnabled(false);
+    }
     m_sql->deleteFromPlaylist(source);
 
     qDebug() << "on_playingError remove for source=" << source << " now=" << m_playlistTable->item(m_currentPlayingIndex, URL)->text() << " current_index=" << m_currentPlayingIndex << " now count=" << m_playlistTable->rowCount() << " end.";
@@ -832,6 +1007,7 @@ void MainWindow::on_m_btnBackWidget_clicked()
 void MainWindow::on_m_btnSearch_clicked()
 {
     if (ui->m_lineEditSearch->text().isEmpty()) return;
+    QString input =  ui->m_lineEditSearch->text();
 
     // 界面更新
     ui->m_stackWidget->setUpdatesEnabled(false);
@@ -851,7 +1027,6 @@ void MainWindow::on_m_btnSearch_clicked()
     // 更改按钮使能
     if (!m_history.empty() && !ui->m_btnBackWidget->isEnabled())
         ui->m_btnBackWidget->setEnabled(true);
-    QString input = ui->m_lineEditSearch->text();
 
     // post 请求网络数据
     m_access->RequestPost(search_widget, input);
@@ -911,12 +1086,35 @@ void MainWindow::on_m_btnMediaLove_clicked()
 
 void MainWindow::on_m_btnGoPrevious_clicked()
 {
-    if (m_playlistTable->rowCount() > 0) {
-        m_currentPlayingIndex = ((m_currentPlayingIndex <= 0) ? m_playlistTable->rowCount() : m_currentPlayingIndex)-1;
-        if (m_player->isPlaying()) {
-            m_player->pause();
+    if (m_playlistTable->rowCount() <= 0) return;
+    if (m_playingHistory.count() <= 1) {
+        if (m_loopStatus == PLAY_LOOP || m_loopStatus == PLAY_SEQUENT_ONCE || m_loopStatus == PLAY_SINGLE) {
+            m_currentPlayingIndex = m_playlistTable->rowCount()-1;
+        } else {
+            // 随机播放
+            if (m_currentPlayingIndex > 0 && m_currentPlayingIndex < m_playlistTable->rowCount() - 1)
+                m_currentPlayingIndex = QRandomGenerator::global()->bounded(0, m_currentPlayingIndex);
+            else
+                m_currentPlayingIndex = QRandomGenerator::global()->bounded(0, m_playlistTable->rowCount());
         }
-        syncPlay(m_playlistTable->item(m_currentPlayingIndex, URL)->text());
+        return playMedia(m_currentPlayingIndex);
+    }
+
+    // 先把当前的音乐移除
+    QString play_url = m_playingHistory.back();
+    m_playingHistory.pop_back();
+
+    qDebug() << "1play=" << play_url;
+    while (!m_playingHistory.empty()) {
+        // 获取上一首 url
+        play_url = m_playingHistory.back();
+        m_playingHistory.pop_back();
+        qDebug() << "2play=" << play_url;
+        if (int play_index = m_playlistTable->findRow(play_url); play_index != -1) {
+            qDebug() << "3play=" << play_url << " index=" << play_index;
+            m_currentPlayingIndex = play_index;
+            return playMedia(m_currentPlayingIndex);
+        }
     }
 }
 
@@ -933,23 +1131,34 @@ void MainWindow::on_m_btnGoPlay_clicked()
 
 void MainWindow::on_m_btnGoNext_clicked()
 {
-    if (m_playlistTable->rowCount() > 0) {
-        m_currentPlayingIndex = (m_currentPlayingIndex < m_playlistTable->rowCount()) ? (m_currentPlayingIndex+1) : 0;
-        if (m_player->isPlaying()) {
-            m_player->pause();
-        }
-        syncPlay(m_playlistTable->item(m_currentPlayingIndex, URL)->text());
-    }
+    playMedia();
 }
 
 void MainWindow::on_m_btnMediaLoop_clicked()
 {
     // show loop
+    m_loopStatus = (++m_loopStatus) % 4;
+    switch (m_loopStatus) {
+    case PLAY_LOOP:
+        ui->m_btnMediaLoop->setIcon(QIcon(":/images/loop.svg"));
+        break;
+    case PLAY_RANDOM:
+        ui->m_btnMediaLoop->setIcon(QIcon(":/images/random.svg"));
+        break;
+    case PLAY_SINGLE:
+        ui->m_btnMediaLoop->setIcon(QIcon(":/images/loop-single.svg"));
+        break;
+    case PLAY_SEQUENT_ONCE:
+        ui->m_btnMediaLoop->setIcon(QIcon(":/images/sequent.svg"));
+        break;
+    }
+    qDebug() << __func__ << " loop changed to " << m_loopStatus;
 }
 
 void MainWindow::on_m_btnMediaLyric_clicked()
 {
     // show current lyric;
+    ui->m_contentStackWidget->setCurrentWidget(ui->m_lyricPage == ui->m_contentStackWidget->currentWidget() ? ui->m_mainPage : ui->m_lyricPage);
 }
 
 void MainWindow::on_m_btnMediaSound_clicked()
@@ -964,6 +1173,43 @@ void MainWindow::on_m_sliderMediaTicker_sliderMoved(int position)
     }
 
     m_player->setPosition(position);
+}
+
+void MainWindow::on_m_btnMediaDelete_clicked()
+{
+    // 1. 播放下一首
+    // 2. 删除当前歌曲： 播放列表 playtable，播放列表的数据库
+    auto info = getCurrentSong();
+    if (!info) return;
+
+    m_playlistTable->removeRow(info->url);  // 从播放列表中移除
+    m_playingHistory.removeAll(info->url);  // 从播放历史中移除
+    qDebug() << "remove=" << info->url;
+
+    if (m_playlistTable->rowCount() <= 0) {
+        // 播放列表空了，停止播放
+        m_currentPlayingIndex = -1;
+        ui->m_btnMediaDelete->setEnabled(false);
+        syncPlay("");
+    } else {
+        playMedia();
+    }
+
+    m_sql->deleteFromPlaylist(info->url);
+    qDebug() << __func__ << " delete playlist song title=" << info->title;
+}
+
+void MainWindow::on_m_btnMediaName_clicked()
+{
+    ui->m_contentStackWidget->setCurrentWidget(ui->m_lyricPage == ui->m_contentStackWidget->currentWidget() ? ui->m_mainPage : ui->m_lyricPage);
+}
+
+void MainWindow::on_m_btnMediaPlayer_clicked()
+{
+    if (auto song = getCurrentSong(); song != nullptr) {
+        ui->m_lineEditSearch->setText(song->author);
+        on_m_btnSearch_clicked();
+    }
 }
 
 void MainWindow::backtoDefault()
@@ -1057,6 +1303,8 @@ void MainWindow::quitSystemTray()
 // 获取当前播放的音乐信息
 QSharedPointer<SongInfo> MainWindow::getCurrentSong()
 {
+    if (m_currentPlayingIndex < 0)
+        return nullptr;
     QSharedPointer<SongInfo> info(new SongInfo);
     info->title = m_playlistTable->item(m_currentPlayingIndex, TITLE)->text();
     info->author = m_playlistTable->item(m_currentPlayingIndex, AUTHOR)->text();
@@ -1066,3 +1314,4 @@ QSharedPointer<SongInfo> MainWindow::getCurrentSong()
     qDebug() << "m_currentplay index=" << m_currentPlayingIndex << " title=" << info->title << " author=" << info->author;
     return info;
 }
+
